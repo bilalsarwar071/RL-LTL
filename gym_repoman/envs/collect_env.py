@@ -2,11 +2,10 @@ import collections
 import os
 import random
 
-import gym
+import gymnasium as gym  # Updated gym import to gymnasium
 import numpy as np
 import pygame
-from gym.spaces import Box, Discrete
-from pygame.compat import geterror
+from gymnasium.spaces import Box, Discrete
 
 main_dir = os.path.split(os.path.abspath(__file__))[0]
 assets_dir = os.path.join(main_dir, 'assets')
@@ -16,9 +15,9 @@ def _load_image(name):
     fullname = os.path.join(assets_dir, name)
     try:
         image = pygame.image.load(fullname)
-    except pygame.error:
-        print('Cannot load image:', fullname)
-        raise SystemExit(str(geterror()))
+    except pygame.error as e:  # Catch the pygame error
+        print(f"Cannot load image: {fullname}")
+        raise SystemExit(e)  # Use the caught error for exit
     image = image.convert_alpha()
     return image
 
@@ -74,13 +73,7 @@ class _Player(pygame.sprite.Sprite):
 
 class CollectEnv(gym.Env):
     """
-    This environment consists of an agent attempting to collect a number of objects. The agents has four actions
-    to move him up, down, left and right, but may be impeded by walls.
-    There are two types of objects in the environment: fridges and TVs, each of which take one of three colours
-    (white, blue and purple) for a total of six objects.
-
-    The objects the agent must collect can be specified by passing a goal condition lambda to the environment.
-
+    This environment consists of an agent attempting to collect a number of objects.
     """
 
     metadata = {
@@ -124,18 +117,11 @@ class CollectEnv(gym.Env):
     _SPRITE_SIZE = 40
 
     def __init__(self, board='original', available_collectibles=None, start_positions=None,
-                 goal_condition=lambda _: True):
+                 goal_condition=lambda _: True, render_mode=None):
         """
-        Create a new instance of the RepoMan environment. The observation space is a single RGB image of size 400x400,
-        and the action space are four discrete actions corresponding to North, East, South and West.
-
-
-        :param board: the state of the walls and free space
-        :param available_collectibles: the items that will be placed in the task
-        :param start_positions: an option parameter to specify the starting position of the objects and player
-        :param goal_condition: a lambda that determines when to end the episode based on teh object just collected.
-        By default, the episode ends when any object is collected.
+        Create a new instance of the Collect environment.
         """
+        self.render_mode = render_mode  # Added render_mode
         self.viewer = None
         self.start_positions = start_positions
         self.goal_condition = goal_condition
@@ -146,7 +132,7 @@ class CollectEnv(gym.Env):
 
         self.board = np.array([list(row) for row in self._BOARDS[board]])
 
-        self.observation_space = Box(0, 255, [self._SCREEN_SIZE[0], self._SCREEN_SIZE[1], 3], dtype=int)
+        self.observation_space = Box(0, 255, [self._SCREEN_SIZE[0], self._SCREEN_SIZE[1], 3], dtype=np.uint8)
         pygame.init()
         pygame.display.init()
         pygame.display.set_mode((1, 1))
@@ -186,7 +172,7 @@ class CollectEnv(gym.Env):
         del surface_array
         return observation
 
-    def reset(self):
+    def reset(self, **kwargs):
         collected = self.collected.sprites()
         self.collectibles.add(collected)
         self.collected.empty()
@@ -214,7 +200,7 @@ class CollectEnv(gym.Env):
 
         self.collected.add(to_remove)
         self.render_group.remove(to_remove)
-        return self._draw_screen(self._surface)
+        return self._draw_screen(self._surface), {}  # Reset now returns observation and info
 
     def step(self, action):
         direction = self._ACTIONS[action]
@@ -231,7 +217,7 @@ class CollectEnv(gym.Env):
             if self.goal_condition(collected[0]):
                 done, reward = True, 1.0
 
-        return self._draw_screen(self._surface), reward, done, {'collected': self.collected}
+        return self._draw_screen(self._surface), reward, done, False, {'collected': self.collected}  # Added 'truncated' flag in step
 
     def render(self, mode='human', close=False):
         if close:
@@ -240,21 +226,23 @@ class CollectEnv(gym.Env):
                 self.viewer = None
             return
 
-        if self.viewer is None:
-            self.viewer = pygame.display.set_mode(self._SCREEN_SIZE, 0, self._bestdepth)
+        if mode == 'rgb_array':  # Check for 'rgb_array' mode for recording
+            return self._draw_screen(self._surface)
+        elif mode == 'human':
+            if self.viewer is None:
+                self.viewer = pygame.display.set_mode(self._SCREEN_SIZE, 0, self._bestdepth)
 
-        self._clock.tick(10 if mode != 'human' else 2)
-        arr = self._draw_screen(self.viewer)
-        pygame.display.flip()
-        return arr
+            self._clock.tick(10 if mode != 'human' else 2)
+            self._draw_screen(self.viewer)
+            pygame.display.flip()
 
 if __name__ == "__main__":
-
-    env = CollectEnv()
-    obs = env.reset()
+    env = CollectEnv()  # Set render_mode for testing
+    obs, _ = env.reset()  # Update reset for new return values
     env.render()
     for _ in range(10000):
-        obs, reward, done, _ = env.step(env.action_space.sample())
+        obs, reward, done, truncated, _ = env.step(env.action_space.sample())  # Updated step method
         env.render()
         if done:
             env.reset()
+

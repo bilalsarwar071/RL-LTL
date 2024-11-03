@@ -1,18 +1,14 @@
 import numpy as np
 import random
-import gym
+import gymnasium as gym  # Update gym import
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.autograd import Variable
 
-use_cuda = torch.cuda.is_available()
-FloatTensor = torch.cuda.FloatTensor if use_cuda else torch.FloatTensor
-LongTensor = torch.cuda.LongTensor if use_cuda else torch.LongTensor
-ByteTensor = torch.cuda.ByteTensor if use_cuda else torch.ByteTensor
-
+# Device setup
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class LinearSchedule(object):
     def __init__(self, schedule_timesteps, final_p, initial_p=1.0):
@@ -56,33 +52,15 @@ class ReplayBuffer(object):
         for i in indices:
             data = self._storage[i]
             obs_t, action, reward, obs_tp1, done = data
-            obses_t.append(np.array(obs_t, copy=False))
-            actions.append(np.array(action, copy=False))
+            obses_t.append(np.asarray(obs_t))
+            actions.append(np.asarray(action))
             rewards.append(reward)
-            obses_tp1.append(np.array(obs_tp1, copy=False))
+            obses_tp1.append(np.asarray(obs_tp1))
             dones.append(done)
-        return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones)
+        return np.asarray(obses_t), np.asarray(actions), np.asarray(rewards), np.asarray(obses_tp1), np.asarray(dones)
 
     def sample(self, batch_size):
-        """Sample a batch of experiences.
-        Parameters
-        ----------
-        batch_size: int
-            How many transitions to sample.
-        Returns
-        -------
-        obs_batch: np.array
-            batch of observations
-        act_batch: np.array
-            batch of actions executed given obs_batch
-        rew_batch: np.array
-            rewards received as results of executing act_batch
-        next_obs_batch: np.array
-            next set of observations seen after executing act_batch
-        done_mask: np.array
-            done_mask[i] = 1 if executing act_batch[i] resulted in
-            the end of an episode and 0 otherwise.
-        """
+        """Sample a batch of experiences."""
         indices = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         return self._encode_sample(indices)
 
@@ -92,19 +70,11 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.n_action = n_action
 
-        # for grey scale
-        # self.conv1 = nn.Conv2d(1, 32, kernel_size=8, stride=4)
-        # for single frame colour
         self.conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
-        # for 2 stacked frames colour
-        # self.conv1 = nn.Conv2d(6, 32, kernel_size=8, stride=4)
-        # for 3 stacked frames colour
-        # self.conv1 = nn.Conv2d(9, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
         self.linear1 = nn.Linear(3136, 512)
-        # self.linear1 = nn.Linear(18496, 512)
         self.head = nn.Linear(512, self.n_action)
 
     def forward(self, x):
@@ -112,8 +82,7 @@ class DQN(nn.Module):
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-
-        x = F.relu(self.linear1(x.view(x.size(0), -1)))
+        x = F.relu(self.linear1(x.reshape(x.size(0), -1)))
         x = self.head(x)
         return x
 
@@ -137,15 +106,17 @@ class ComposedDQN(nn.Module):
 
 
 def get_value(dqn, obs):
-    return dqn(Variable(obs, volatile=True)).data.max(1)[0].item()
+    with torch.no_grad():  # Use torch.no_grad() instead of volatile
+        return dqn(obs).max(1)[0].item()
 
 def get_action(dqn, obs):
-    return dqn(Variable(obs, volatile=True)).data.max(1)[1].item()
+    with torch.no_grad():  # Use torch.no_grad() instead of volatile
+        return dqn(obs).max(1)[1].item()
 
 class Agent(object):
     def __init__(self,
                  env,
-                 max_timesteps=2000000,
+                 max_timesteps=200000, #2000000
                  learning_starts=10000,
                  train_freq=4,
                  target_update_freq=1000,
@@ -157,8 +128,8 @@ class Agent(object):
                  eps_final=0.01,
                  eps_timesteps=500000,
                  print_freq=10):
-        assert type(env.observation_space) == gym.spaces.Box
-        assert type(env.action_space) == gym.spaces.Discrete
+        assert isinstance(env.observation_space, gym.spaces.Box)
+        assert isinstance(env.action_space, gym.spaces.Discrete)
 
         self.env = env
         self.max_timesteps = max_timesteps
@@ -171,13 +142,9 @@ class Agent(object):
 
         self.eps_schedule = LinearSchedule(eps_timesteps, eps_final, eps_initial)
 
-        self.q_func = DQN(self.env.action_space.n)
-        self.target_q_func = DQN(self.env.action_space.n)
+        self.q_func = DQN(self.env.action_space.n).to(device)
+        self.target_q_func = DQN(self.env.action_space.n).to(device)
         self.target_q_func.load_state_dict(self.q_func.state_dict())
-
-        if use_cuda:
-            self.q_func.cuda()
-            self.target_q_func.cuda()
 
         self.optimizer = optim.Adam(self.q_func.parameters(), lr=learning_rate)
         self.replay_buffer = ReplayBuffer(replay_buffer_size)
@@ -187,40 +154,37 @@ class Agent(object):
         sample = random.random()
         eps_threshold = self.eps_schedule(self.steps)
         if sample > eps_threshold:
-            obs = np.array(obs)
-            obs = torch.from_numpy(obs).type(FloatTensor).unsqueeze(0)
-            # Use volatile = True if variable is only used in inference mode, i.e. don’t save the history
-            return self.q_func(Variable(obs, volatile=True)).data.max(1)[1].view(1, 1)
+            obs = torch.from_numpy(np.array(obs)).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                return self.q_func(obs).max(1)[1].view(1, 1)
         else:
             sample_action = self.env.action_space.sample()
-            return torch.IntTensor([[sample_action]])
+            return torch.tensor([[sample_action]], dtype=torch.long).to(device)
 
     def train(self):
-        obs = self.env.reset()
+        obs, _ = self.env.reset()  # gymnasium reset returns additional info
         episode_rewards = [0.0]
 
         for t in range(self.max_timesteps):
             action = self.select_action(obs)
-            new_obs, reward, done, info = self.env.step(action[0][0])
+            new_obs, reward, done, truncated, info = self.env.step(action.item())  # gymnasium step returns more values
+            done = done or truncated  # Consider 'truncated' as 'done' for end of episode
+
             self.replay_buffer.add(obs, action, reward, new_obs, done)
             obs = new_obs
 
             episode_rewards[-1] += reward
             if done:
-                obs = self.env.reset()
+                obs, _ = self.env.reset()  # Reset with gymnasium compatibility
                 episode_rewards.append(0.0)
 
             if t > self.learning_starts and t % self.train_freq == 0:
                 obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = self.replay_buffer.sample(self.batch_size)
-                obs_batch = Variable(torch.from_numpy(obs_batch).type(FloatTensor))
-                act_batch = Variable(torch.from_numpy(act_batch).type(LongTensor))
-                rew_batch = Variable(torch.from_numpy(rew_batch).type(FloatTensor))
-                next_obs_batch = Variable(torch.from_numpy(next_obs_batch).type(FloatTensor))
-                not_done_mask = Variable(torch.from_numpy(1 - done_mask)).type(FloatTensor)
-
-                if use_cuda:
-                    act_batch = act_batch.cuda()
-                    rew_batch = rew_batch.cuda()
+                obs_batch = torch.from_numpy(obs_batch).float().to(device)
+                act_batch = torch.from_numpy(act_batch).long().to(device)
+                rew_batch = torch.from_numpy(rew_batch).float().to(device)
+                next_obs_batch = torch.from_numpy(next_obs_batch).float().to(device)
+                not_done_mask = torch.from_numpy(1 - done_mask).float().to(device)
 
                 current_q_values = self.q_func(obs_batch).gather(1, act_batch.squeeze(2)).squeeze()
                 next_max_q = self.target_q_func(next_obs_batch).detach().max(1)[0]
@@ -231,11 +195,10 @@ class Agent(object):
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                for params in self.q_func.parameters():
-                    params.grad.data.clamp_(-1, 1)
+                for param in self.q_func.parameters():
+                    param.grad.data.clamp_(-1, 1)
                 self.optimizer.step()
 
-            # Periodically update the target network by Q network to target Q network
             if t > self.learning_starts and t % self.target_update_freq == 0:
                 self.target_q_func.load_state_dict(self.q_func.state_dict())
 
@@ -245,8 +208,9 @@ class Agent(object):
             num_episodes = len(episode_rewards)
             if done and self.print_freq is not None and len(episode_rewards) % self.print_freq == 0:
                 print("--------------------------------------------------------")
-                print("steps {}".format(t))
-                print("episodes {}".format(num_episodes))
-                print("mean 100 episode reward {}".format(mean_100ep_reward))
-                print("% time spent exploring {}".format(int(100 * self.eps_schedule(t))))
+                print(f"steps {t}")
+                print(f"episodes {num_episodes}")
+                print(f"mean 100 episode reward {mean_100ep_reward}")
+                print(f"% time spent exploring {int(100 * self.eps_schedule(t))}")
                 print("--------------------------------------------------------")
+

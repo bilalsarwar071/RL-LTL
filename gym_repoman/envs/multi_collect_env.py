@@ -1,4 +1,9 @@
+import sys
+import os
 import pygame
+
+# Add the parent directory to the Python path so that gym_repoman can be found
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gym_repoman.envs.collect_env import CollectEnv
 
@@ -30,4 +35,6 @@ class MultiCollectEnv(CollectEnv):
             done, reward = True, 1.0
 
         obs = self._draw_screen(self._surface)
-        return obs, reward, done, {'collected': self.collected}
+        truncated = False  # Gymnasium now includes this in the step return
+        return obs, reward, done, truncated, {'collected': self.collected}  # Added truncated
+

@@ -1,5 +1,6 @@
-from gym.envs.registration import register
+from gymnasium.envs.registration import register
 
+# Register different environments with Gymnasium
 register(
     id='RepoMan-v0',
     entry_point='gym_repoman.envs:CollectEnv',
@@ -54,3 +55,4 @@ register(
             'reward_condition': lambda _: True},
     entry_point='gym_repoman.envs:MultiCollectEnv',
 )
+
